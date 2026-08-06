@@ -1,26 +1,24 @@
-"""Browser and context factory."""
+"""Browser and context factory.
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
+Uses Camoufox (a patched Firefox build) instead of stock Chromium to dodge
+the Cloudflare Managed Challenge's automation fingerprinting.
+"""
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/125.0.0.0 Safari/537.36"
-)
+from contextlib import asynccontextmanager
+
+from camoufox.async_api import AsyncCamoufox
+from playwright.async_api import Browser, BrowserContext, Page
 
 
-async def create_browser(pw: Playwright, headless: bool, slow_mo: int) -> Browser:
-    return await pw.chromium.launch(
-        headless=headless,
-        slow_mo=slow_mo,
-        args=["--start-maximized"],
-    )
+@asynccontextmanager
+async def create_browser(headless: bool, slow_mo: int):
+    async with AsyncCamoufox(headless=headless, slow_mo=slow_mo) as browser:
+        yield browser
 
 
 async def create_context(browser: Browser) -> BrowserContext:
     return await browser.new_context(
         viewport={"width": 1440, "height": 900},
-        user_agent=_USER_AGENT,
     )
 
 

@@ -59,90 +59,117 @@ def _extract_route_from_request(body: dict) -> dict:
 
 
 def _parse_offer_v4(data: dict) -> dict:
+    """Parse the real /api/v4/offers/{id} payload.
+
+    Shape observed live: {"type", "request": {...}, "offer": {"routing", "cargoDetails",
+    "items": [{"id", "departureDate", "productOffers": [{...pricing sections...}]}]}}
+    """
     parsed: dict = {}
 
-    # v4 wraps everything: {"type": ..., "request": {...}, "offer": {...}}
     request = data.get("request") or {}
     offer = data.get("offer") or {}
 
-    # Store raw keys so field names are visible when structure is unknown
-    parsed["_request_keys"] = list(request.keys())
-    parsed["_offer_keys"] = list(offer.keys())
+    routing = request.get("routings", [{}])[0] if request.get("routings") else offer.get("routing", {})
+    start = routing.get("startLocation", {})
+    end = routing.get("endLocation") or routing.get("destinationLocation") or {}
+    parsed["originPort"] = _coerce_port(start)
+    parsed["destinationPort"] = _coerce_port(end)
 
-    # ── Identity ──────────────────────────────────────────────────────────────
-    for key in ("offerId", "id", "referenceNumber", "status", "currency"):
-        for src in (offer, request, data):
-            if key in src:
-                parsed[key] = src[key]
-                break
+    cargo = request.get("cargoDetails") or offer.get("cargoDetails") or {}
+    container = cargo.get("container", {})
+    if container:
+        parsed["containerType"] = container.get("containerType")
+        parsed["containerQuantity"] = container.get("amount")
+        parsed["weightPerContainer"] = container.get("cargoWeightPerContainer")
+        parsed["weightUnit"] = container.get("unitOfMeasure")
+    commodity = cargo.get("commodityGroup", {})
+    if commodity:
+        parsed["commodity"] = commodity.get("name")
 
-    # ── Route ports ───────────────────────────────────────────────────────────
-    origin_keys = ("originPort", "pol", "loadingPort", "origin", "departurePort",
-                   "fromPort", "originLocation", "loadPort", "portOfLoading", "startLocation")
-    dest_keys   = ("destinationPort", "pod", "dischargePort", "destination",
-                   "arrivalPort", "toPort", "destinationLocation", "portOfDischarge", "endLocation")
+    parsed["validFrom"] = request.get("validFrom")
 
-    # Check flat fields in request → offer → root, then one level deeper in sub-dicts
-    def _find_port(field_names):
-        for src in (request, offer, data):
-            for k in field_names:
-                if k in src:
-                    return _coerce_port(src[k])
-            # one level deeper in dict sections
-            for section_key in ("routing", "route", "transportation", "transportPlan",
-                                "itinerary", "legs"):
-                section = src.get(section_key)
-                if not isinstance(section, dict):
-                    continue
-                for k in field_names:
-                    if k in section:
-                        return _coerce_port(section[k])
-            # routings is a list — check its first element
-            routings = src.get("routings")
-            if isinstance(routings, list) and routings:
-                first = routings[0]
-                for k in field_names:
-                    if k in first:
-                        return _coerce_port(first[k])
-        return None
-
-    parsed["originPort"]      = _find_port(origin_keys)
-    parsed["destinationPort"] = _find_port(dest_keys)
-
-    # ── Container / commodity ─────────────────────────────────────────────────
-    for key in ("containerType", "equipmentType", "commodity", "weight", "weightUnit"):
-        for src in (request, offer, data):
-            if key in src:
-                parsed[key] = src[key]
-                break
-
-    # ── Departures / sailings ─────────────────────────────────────────────────
-    sailing_keys = ("routings", "sailings", "schedules", "departures",
-                    "options", "sailingOptions", "legs", "offerLegs")
-    for src in (offer, request, data):
-        for key in sailing_keys:
-            if key in src and isinstance(src[key], list) and src[key]:
-                parsed["departures"] = _parse_departure_list(src[key])
-                break
-        if "departures" in parsed:
-            break
-
-    # ── Pricing ───────────────────────────────────────────────────────────────
-    for key in ("quickQuote", "price", "totalPrice", "oceanFreight",
-                "chargeBreakdown", "charges", "rates"):
-        for src in (offer, request, data):
-            if key in src:
-                parsed[key] = src[key]
-                break
-
-    # ── Validity ──────────────────────────────────────────────────────────────
-    for key in ("validFrom", "validTo", "expiryDate", "validity"):
-        for src in (offer, request, data):
-            if key in src:
-                parsed[key] = src[key]
-                break
+    items = offer.get("items", [])
+    parsed["departures"] = [_parse_offer_item(item) for item in items if isinstance(item, dict)]
 
     return parsed
+
+
+def _parse_offer_item(item: dict) -> dict:
+    """One departure date's offer, containing one or more product offers (Quick Quote, Spot, ...)."""
+    entry: dict = {
+        "departureDate": item.get("departureDate"),
+        "productOffers": [_parse_product_offer(po) for po in item.get("productOffers", [])
+                           if isinstance(po, dict)],
+    }
+    return entry
+
+
+def _parse_product_offer(po: dict) -> dict:
+    """A single priced offer (e.g. QQ_MONTHLY) with legs, charges, and value-added services."""
+    result: dict = {
+        "offerId": po.get("offerId"),
+        "productType": po.get("productType"),
+        "departureDate": po.get("departureDate"),
+        "arrivalDate": po.get("arrivalDate"),
+        "estimatedDaysOfTransport": po.get("estimatedDaysOfTransport"),
+        "cutOffDateTime": po.get("cutOffDateTime"),
+        "offerValidTo": po.get("offerValidTo"),
+        "potentialQuotationValidFrom": po.get("potentialQuotationValidFrom"),
+        "potentialQuotationValidTo": po.get("potentialQuotationValidTo"),
+        "includedCharges": po.get("includedCharges"),
+        "excludedCharges": po.get("excludedCharges"),
+        "containers": po.get("containers"),
+    }
+
+    legs = po.get("legs", [])
+    if legs:
+        result["legs"] = [
+            {
+                "modeOfTransport": leg.get("modeOfTransport"),
+                "departureLocation": _coerce_port(leg.get("departureLocation")),
+                "departureDateTime": leg.get("departureDateTime"),
+                "arrivalLocation": _coerce_port(leg.get("arrivalLocation")),
+                "arrivalDateTime": leg.get("arrivalDateTime"),
+                "serviceName": leg.get("serviceName"),
+                "voyageNumber": leg.get("voyageNumber"),
+                "transitTime": leg.get("transitTime"),
+                "vesselName": leg.get("vesselName"),
+            }
+            for leg in legs
+        ]
+
+    # sections["USD"] holds the same charges normalized to USD; prefer it, fall back to LOCAL.
+    sections = po.get("sections", {})
+    charge_groups = sections.get("USD") or sections.get("LOCAL") or []
+    result["charges"] = _parse_charge_groups(charge_groups)
+
+    # Total ocean freight per container type, from the SEA_FREIGHT group.
+    ocean_freight = next((g for g in charge_groups if g.get("name") == "SEA_FREIGHT"), None)
+    if ocean_freight and ocean_freight.get("data"):
+        sea = ocean_freight["data"][0]
+        result["ocean_freight_per_container"] = [
+            {"container_type": c.get("containerType"), "amount": c.get("amount"), "currency": sea.get("currency")}
+            for c in sea.get("containers", [])
+        ]
+
+    return result
+
+
+def _parse_charge_groups(charge_groups: list) -> list[dict]:
+    """Flatten sections[...] charge groups into [{group, name, code, currency, containers}]."""
+    result = []
+    for group in charge_groups:
+        if not isinstance(group, dict):
+            continue
+        for charge in group.get("data", []):
+            result.append({
+                "group": group.get("label") or group.get("name"),
+                "name": charge.get("name"),
+                "code": charge.get("code"),
+                "currency": charge.get("currency"),
+                "containers": charge.get("containers"),
+            })
+    return result
 
 
 def _coerce_port(val) -> str:
@@ -156,39 +183,6 @@ def _coerce_port(val) -> str:
             if val.get(k):
                 return str(val[k])
     return ""
-
-
-def _parse_departure_list(items: list) -> list[dict]:
-    result = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        entry: dict = {}
-
-        # Dates
-        for key in ("departureDate", "etd", "sailingDate", "cutOffDate",
-                    "arrivalDate", "eta", "deliveryDate"):
-            if key in item:
-                entry[key] = item[key]
-
-        # Transit & vessel
-        for key in ("transitTime", "transitDays", "vesselName", "vessel",
-                    "voyage", "voyageNumber", "service", "serviceCode"):
-            if key in item:
-                entry[key] = item[key]
-
-        # Price — flat or nested
-        for key in ("price", "totalPrice", "quickQuote", "amount",
-                    "currency", "oceanFreight", "charges"):
-            if key in item:
-                entry[key] = item[key]
-
-        # Store unknown keys so nothing is silently dropped
-        entry["_raw_keys"] = list(item.keys())
-
-        if len(entry) > 1:  # more than just _raw_keys
-            result.append(entry)
-    return result
 
 
 def _extract_top_level(data: dict, keys: list[str]) -> dict:

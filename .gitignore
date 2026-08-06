@@ -1,4 +1,18 @@
+# secrets / local config
 .env
 *.json
+
+# python
 __pycache__/
 *.pyc
+.pytest_cache/
+venv/
+
+# scraper output & runtime state
+logs/
+output/
+*.png
+trade_lanes_all.csv
+
+# editor/tooling
+.claude/

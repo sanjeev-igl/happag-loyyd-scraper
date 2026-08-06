@@ -27,6 +27,27 @@ CONTAINER_TYPE_MAP: dict[str, str] = {
     "45HC": "L5G0",
 }
 
+# The container type picker on the search form is a two-level accordion:
+# a group header (e.g. "GENERAL PURPOSE") that expands to reveal individual
+# container rows. Every selectable row (Tank is excluded — it's disabled,
+# "Available only with SOC"), in accordion order.
+CONTAINER_TYPES: list[dict[str, str]] = [
+    {"group": "General Purpose", "label": "20' General Purpose"},
+    {"group": "General Purpose", "label": "40' General Purpose"},
+    {"group": "General Purpose", "label": "40' General Purpose High Cube"},
+    {"group": "Operating Reefer", "label": "20' Operating Reefer"},
+    {"group": "Operating Reefer", "label": "40' Operating Reefer"},
+    {"group": "Non-Operating Reefer", "label": "40' Non-operating Reefer"},
+    {"group": "Open Top", "label": "20' Open Top (in-gauge)"},
+    {"group": "Open Top", "label": "40' Open Top (in-gauge)"},
+    {"group": "Open Top", "label": "20' High Cube Open Top (in-gauge)"},
+    {"group": "Open Top", "label": "40' High Cube Open Top (in-gauge)"},
+    {"group": "Flatrack", "label": "20' Flatrack (in-gauge)"},
+    {"group": "Flatrack", "label": "40' Flatrack (in-gauge)"},
+    {"group": "Flatrack", "label": "40' High Cube Flatrack (in-gauge)"},
+    {"group": "Hard Top", "label": "40' High Cube Hard Top (in-gauge)"},
+]
+
 DEFAULT_CONFIG: dict = {
     "email": os.getenv("HL_EMAIL", ""),
     "password": os.getenv("HL_PASSWORD", ""),
@@ -44,6 +65,14 @@ DEFAULT_CONFIG: dict = {
     "output_file": os.getenv("HL_OUTPUT", "output/hapag_lloyd_quotes.json"),
     "slow_mo": int(os.getenv("HL_SLOW_MO", "100")),
 }
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+SUPABASE_TRADE_LANES_TABLE = os.getenv("SUPABASE_TRADE_LANES_TABLE", "trade_lanes")
+
+MONGO_URI = os.getenv("MONGO_URI", "")
+MONGO_DB = os.getenv("MONGO_DB", "")
+MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "")
 
 
 def load_config(args: argparse.Namespace) -> dict:
@@ -78,4 +107,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--origin", default="")
     parser.add_argument("--destination", default="")
     parser.add_argument("--output", default="")
+    parser.add_argument(
+        "--from-db", action="store_true", default=False,
+        help="Loop over every route in the trade lanes CSV instead of Supabase.",
+    )
+    parser.add_argument(
+        "--from-supabase", action="store_true", default=False,
+        help="Loop over every route in the Supabase trade_lanes table. This is the default.",
+    )
+    parser.add_argument(
+        "--single", action="store_true", default=False,
+        help="Scrape a single route from config.json/.env instead of looping over Supabase/CSV.",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None,
+        help="With --from-db/--from-supabase, only process the top N lanes (by shipment_count).",
+    )
+    parser.add_argument(
+        "--csv", default="trade_lanes_all.csv",
+        help="Path to the trade lanes CSV file (used with --from-db). Default: trade_lanes_all.csv",
+    )
     return parser.parse_args()

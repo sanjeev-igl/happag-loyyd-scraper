@@ -3,7 +3,9 @@
 import asyncio
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 from hapag_lloyd.extractors.utils import wait_and_click, table_to_rows
+from hapag_lloyd.logger import get_logger
 
+log = get_logger()
 _BTN_SEL = (
     "button:has-text('Price Breakdown'), "
     "[class*='price-breakdown']:not(table):not(tr):not(td), "
@@ -61,7 +63,7 @@ async def _open_modal(page: Page) -> bool:
     try:
         await wait_and_click(page, _BTN_SEL, timeout=8_000)
     except PlaywrightTimeout:
-        print("  [breakdown] Price Breakdown button not found — skipping.")
+        log.info("  [breakdown] Price Breakdown button not found — skipping.")
         return False
 
     await asyncio.sleep(1.5)
@@ -70,7 +72,7 @@ async def _open_modal(page: Page) -> bool:
         await page.wait_for_selector(_MODAL_SEL, state="visible", timeout=8_000)
         return True
     except PlaywrightTimeout:
-        print("  [breakdown] Modal did not appear — skipping.")
+        log.info("  [breakdown] Modal did not appear — skipping.")
         return False
 
 

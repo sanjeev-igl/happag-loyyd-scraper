@@ -4,14 +4,16 @@ import asyncio
 import re
 from playwright.async_api import Page
 from hapag_lloyd.extractors.utils import parse_amount
+from hapag_lloyd.logger import get_logger
 
+log = get_logger()
 
 async def extract_offer_grid(page: Page) -> list[dict]:
     """
     Return one entry per departure column:
         [{"date": "2026-07-09", "quick_quote_usd": 10.0}, …]
     """
-    print("[results] Extracting offer grid …")
+    log.info("[results] Extracting offer grid …")
     try:
         await page.wait_for_selector(
             ".departure-date, [class*='departure'], td[class*='date'], th[class*='date'], "
@@ -20,7 +22,7 @@ async def extract_offer_grid(page: Page) -> list[dict]:
             timeout=10_000,
         )
     except Exception:
-        print("  [offer_grid] Date selectors not found — attempting extraction anyway …")
+        log.info("  [offer_grid] Date selectors not found — attempting extraction anyway …")
     await asyncio.sleep(1)
 
     date_cells = await _find_date_cells(page)
