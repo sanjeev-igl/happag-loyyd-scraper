@@ -4,3 +4,10 @@ python-dotenv>=1.0.0
 pymongo>=4.6.0
 supabase>=2.4.0
 pytest>=8.0.0
+
+# Observability (LGTM stack)
+opentelemetry-api>=1.27.0
+opentelemetry-sdk>=1.27.0
+opentelemetry-exporter-otlp>=1.27.0
+prometheus-client>=0.21.0
+python-json-logger>=2.0.7

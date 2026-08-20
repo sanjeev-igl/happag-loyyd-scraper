@@ -243,6 +243,66 @@ pytest
 
 ---
 
+## Observability (LGTM stack)
+
+The scraper is instrumented with structured logs, OpenTelemetry traces, and Prometheus metrics, all visualized in Grafana. Because the scraper is a batch job (it runs, does its work, and exits) rather than a long-lived server, metrics use a **push** model — the scraper accumulates counters/gauges in-process and pushes them once to Pushgateway at the end of each run, instead of exposing a `/metrics` endpoint for Prometheus to scrape.
+
+| Component | Role |
+|-----------|------|
+| **L**oki | Stores logs, shipped from `logs/` by Promtail |
+| **G**rafana | Dashboards + explore UI across all three signals |
+| **T**empo | Stores distributed traces (login → form fill → extraction spans) |
+| **M**etrics (Prometheus + Pushgateway) | Stores run/lane counters and durations |
+| OTel Collector | Receives OTLP traces/metrics from the scraper, forwards to Tempo/Prometheus |
+| Promtail | Tails `logs/**/*.log` (JSON lines) and ships them to Loki |
+
+### Running the stack
+
+```bash
+# Start the LGTM stack (Loki, Grafana, Tempo, Prometheus, Pushgateway, OTel Collector, Promtail)
+docker compose up -d loki promtail tempo prometheus pushgateway otel-collector grafana
+
+# Run the scraper (builds the image on first run), wired to the stack via .env
+docker compose --profile scrape run --rm scraper --single
+docker compose --profile scrape run --rm scraper                # full multi-lane run
+```
+
+Grafana: **http://localhost:3003** (anonymous access enabled, Admin role — change `GF_AUTH_ANONYMOUS_ENABLED` in `docker-compose.yml` before exposing this beyond localhost). A **"Hapag-Lloyd Scraper Overview"** dashboard is pre-provisioned with lane success/failure counts, run duration, failure reasons, and a live log panel. Logs, traces, and metrics are cross-linked: a log line with a `trace_id` field jumps straight to its trace in Tempo, and Tempo's service graph links back to Prometheus.
+
+Other UIs: Prometheus `http://localhost:9093`, Pushgateway `http://localhost:9094`, Loki API `http://localhost:3103`, Tempo API `http://localhost:3203`.
+
+> Ports are shifted up from Grafana/LGTM defaults (`3003`, `9093`, `9094`, `3103`, `3203`, `4325-4328`) to avoid clashing with other LGTM stacks that may already be running on this machine. Adjust the `ports:` mappings in `docker-compose.yml` if you'd rather use the defaults.
+
+### Running outside Docker
+
+Tracing/metrics are no-op-safe: if `OTEL_EXPORTER_OTLP_ENDPOINT` / `PROMETHEUS_PUSHGATEWAY_URL` aren't set, `python main.py` runs exactly as before, just without exporting telemetry. Point them at the stack to opt in from a local (non-Docker) run:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4327
+export PROMETHEUS_PUSHGATEWAY_URL=http://localhost:9094
+python main.py --single
+```
+
+### Files
+
+```
+Dockerfile                     Scraper image (Camoufox/Playwright + OTel/Prometheus clients)
+docker-compose.yml             Full LGTM stack + scraper service (profile "scrape")
+observability/
+  loki/loki-config.yaml
+  promtail/promtail-config.yaml  Tails logs/**/*.log, parses JSON, ships to Loki
+  tempo/tempo-config.yaml        Also runs the metrics-generator (service graph, span metrics)
+  prometheus/prometheus.yaml     Scrapes Pushgateway/Tempo/Loki/OTel Collector self-metrics
+  otel-collector/otel-collector-config.yaml   OTLP receiver -> Tempo (traces) / Prometheus remote-write (metrics)
+  grafana/provisioning/          Datasources (Loki, Prometheus, Tempo) + dashboard provider, auto-loaded on startup
+  grafana/dashboards/scraper-overview.json
+hapag_lloyd/
+  logger.py                      JSON structured logging + trace_id/span_id correlation
+  telemetry.py                   OTel tracer setup + ScrapeMetrics (Pushgateway push)
+```
+
+---
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -255,3 +315,6 @@ pytest
 | `SUPABASE_URL and SUPABASE_KEY must be set` | Set both in `.env`, or run with `--from-db` to use the local CSV instead |
 | `MONGO_URI, MONGO_DB, and MONGO_COLLECTION must be set` | Set all three in `.env`, or don't rely on Mongo persistence — JSON files are always saved regardless |
 | A route/container type fails with "missing permissions" | The account isn't entitled to quote that route/container combination; the scraper marks it failed in `checkpoint.json` and moves on |
+| `docker compose up` fails with "port is already allocated" | Another stack on this machine (e.g. a different scraper's LGTM setup) already owns that port — change the host-side port in `docker-compose.yml`'s `ports:` mapping |
+| No logs showing up in Loki/Grafana | Confirm `logs/` is being written locally (Promtail mounts it read-only) and that `promtail` is running: `docker compose logs promtail` |
+| No traces/metrics showing up | Confirm `OTEL_EXPORTER_OTLP_ENDPOINT` / `PROMETHEUS_PUSHGATEWAY_URL` are set (they're set automatically for `docker compose --profile scrape run scraper`, but not for a local `python main.py` run) |

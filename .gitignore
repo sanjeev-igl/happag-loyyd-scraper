@@ -1,6 +1,7 @@
 # secrets / local config
 .env
-*.json
+config.json
+checkpoint.json
 
 # python
 __pycache__/

@@ -13,6 +13,7 @@ Usage:
 
 import asyncio
 import sys
+import time
 
 from playwright.async_api import Page
 
@@ -39,46 +40,63 @@ from hapag_lloyd.output import build_output, make_output_path, save_json
 from hapag_lloyd.mongo_store import save_to_mongo
 from hapag_lloyd.trade_lanes import fetch_trade_lanes, fetch_trade_lanes_from_supabase
 from hapag_lloyd.checkpoint import load_checkpoint, is_done, mark_success, mark_failed
-from hapag_lloyd.errors import PermissionDeniedError, format_checkpoint_error
+from hapag_lloyd.errors import PermissionDeniedError, format_checkpoint_error, classify_exception
 from hapag_lloyd.logger import setup_logging
+from hapag_lloyd.telemetry import setup_tracing, shutdown_tracing, get_tracer, ScrapeMetrics
+from opentelemetry.context import Context
 
 log = setup_logging()
+setup_tracing()
+tracer = get_tracer()
 
 
 async def _scrape_current_form_state(page: Page, cfg: dict, capture: NetworkCapture) -> dict:
     """Fill the search form for cfg's route, submit, scrape results, and return the output dict."""
-    await fill_search_form(page, cfg)
-    await click_search(page)
+    # Each lane gets its own root trace (not a child of a run-spanning span) so it
+    # closes and shows up in Tempo within seconds — a multi-lane run can take hours,
+    # and a single span wrapping the whole thing wouldn't export until it ends.
+    with tracer.start_as_current_span("scrape_lane", context=Context()) as span:
+        span.set_attribute("hl.origin", cfg.get("start_location", ""))
+        span.set_attribute("hl.destination", cfg.get("end_location", ""))
+        span.set_attribute("hl.container_type", cfg.get("container_type", ""))
 
-    # Some routes/container types the account isn't entitled to return a "missing
-    # permissions" error banner instead of offers — dismiss it and bail out of this
-    # lane rather than waiting for results that will never arrive.
-    if await dismiss_permission_error_modal(page):
-        raise PermissionDeniedError(
-            "Service unavailable due to missing permissions for this route/container type"
-        )
+        with tracer.start_as_current_span("fill_search_form"):
+            await fill_search_form(page, cfg)
+            await click_search(page)
 
-    # A separate onboarding carousel ("Surcharges in Ocean Freight Currency", 1 of 3) can
-    # appear on the results page after search, distinct from the pre-search one.
-    await dismiss_onboarding_tour(page)
+        # Some routes/container types the account isn't entitled to return a "missing
+        # permissions" error banner instead of offers — dismiss it and bail out of this
+        # lane rather than waiting for results that will never arrive.
+        if await dismiss_permission_error_modal(page):
+            raise PermissionDeniedError(
+                "Service unavailable due to missing permissions for this route/container type"
+            )
 
-    log.info("[scraper] Starting extraction ...")
+        # A separate onboarding carousel ("Surcharges in Ocean Freight Currency", 1 of 3) can
+        # appear on the results page after search, distinct from the pre-search one.
+        await dismiss_onboarding_tour(page)
 
-    visual_data = await scrape_results_page(page, capture=capture)
+        log.info("[scraper] Starting extraction ...")
 
-    # scrape_results_page waits for the full v4 offer response before returning, so this
-    # reflects everything captured for this lane.
-    api_data = parse_api_responses(capture.responses, capture.request_bodies)
-    if api_data:
-        log.info(f"[scraper] Parsed API data from {len(capture.responses)} captured responses")
+        with tracer.start_as_current_span("scrape_results_page"):
+            visual_data = await scrape_results_page(page, capture=capture)
 
-    output = build_output(cfg, visual_data, capture.responses, api_data)
-    return output
+        # scrape_results_page waits for the full v4 offer response before returning, so this
+        # reflects everything captured for this lane.
+        api_data = parse_api_responses(capture.responses, capture.request_bodies)
+        if api_data:
+            log.info(f"[scraper] Parsed API data from {len(capture.responses)} captured responses")
+
+        output = build_output(cfg, visual_data, capture.responses, api_data)
+        return output
 
 
 async def run(cfg: dict, explicit_output: bool = False) -> list[dict]:
     outputs = []
     checkpoint = load_checkpoint()
+    metrics = ScrapeMetrics()
+    metrics.lanes_total.set(1)
+    start_time = time.monotonic()
     async with create_browser(cfg["headless"], cfg["slow_mo"]) as browser:
         context = await create_context(browser)
         page = await new_page(context)
@@ -127,11 +145,17 @@ async def run(cfg: dict, explicit_output: bool = False) -> list[dict]:
                 save_to_mongo(output)
                 outputs.append(output)
                 mark_success(checkpoint, cfg["start_location"], cfg["end_location"], ctype["label"])
+                metrics.record_success()
             except Exception as exc:
                 error_str = format_checkpoint_error(exc)
                 log.error(f"[container {i}/{len(CONTAINER_TYPES)}] FAILED: {error_str}")
                 mark_failed(checkpoint, cfg["start_location"], cfg["end_location"], ctype["label"], error=error_str)
-                continue
+                metrics.record_failure(classify_exception(exc))
+            finally:
+                # Push after every lane (not just at the end) so metrics still land in
+                # Prometheus even if the run is interrupted or crashes partway through.
+                metrics.run_duration.set(time.monotonic() - start_time)
+                metrics.push()
 
         return outputs
 
@@ -149,6 +173,9 @@ async def run_from_db(
         lanes = lanes[:limit]
 
     checkpoint = load_checkpoint()
+    metrics = ScrapeMetrics()
+    metrics.lanes_total.set(len(lanes))
+    start_time = time.monotonic()
 
     async with create_browser(cfg["headless"], cfg["slow_mo"]) as browser:
         context = await create_context(browser)
@@ -202,26 +229,35 @@ async def run_from_db(
                     save_json(output, output_file)
                     save_to_mongo(output)
                     mark_success(checkpoint, lane_cfg["start_location"], lane_cfg["end_location"], ctype["label"])
+                    metrics.record_success()
                 except Exception as exc:
                     error_str = format_checkpoint_error(exc)
                     log.error(f"[lane {i}/{len(lanes)}] [container {j}/{len(CONTAINER_TYPES)}] FAILED: {error_str}")
                     mark_failed(
                         checkpoint, lane_cfg["start_location"], lane_cfg["end_location"], ctype["label"], error=error_str,
                     )
-                    continue
+                    metrics.record_failure(classify_exception(exc))
+                finally:
+                    # Push after every lane (not just at the end) so metrics still land in
+                    # Prometheus even if the run is interrupted or crashes partway through.
+                    metrics.run_duration.set(time.monotonic() - start_time)
+                    metrics.push()
 
 
 def main() -> None:
     args = parse_args()
     cfg = load_config(args)
 
-    if args.single:
-        asyncio.run(run(cfg, explicit_output=bool(args.output)))
-    else:
-        use_supabase = not args.from_db
-        asyncio.run(run_from_db(
-            cfg, limit=args.limit, csv_path=args.csv, use_supabase=use_supabase,
-        ))
+    try:
+        if args.single:
+            asyncio.run(run(cfg, explicit_output=bool(args.output)))
+        else:
+            use_supabase = not args.from_db
+            asyncio.run(run_from_db(
+                cfg, limit=args.limit, csv_path=args.csv, use_supabase=use_supabase,
+            ))
+    finally:
+        shutdown_tracing()
 
 
 if __name__ == "__main__":
