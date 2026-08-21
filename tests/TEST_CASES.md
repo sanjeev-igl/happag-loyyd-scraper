@@ -696,6 +696,73 @@ Confirmed by reading `dismiss_onboarding_tour` (`form.py`): it has no return val
 
 ---
 
+## Module: Automated Unit Coverage Notes
+
+### Test Case 33 — `classify_exception`/`format_checkpoint_error` Now Have Unit Coverage
+
+**Test Scenario:** Verify the reason-tag classification logic exercised manually in Test Cases 25–26
+is also covered by fast, deterministic automated unit tests (no browser required), so regressions
+in the classification rules are caught in CI rather than only during a live scrape.
+
+**Test Steps**
+1. Run `pytest tests/test_errors.py -v`.
+2. Inspect the cases covered: every `ScrapeError` subclass's fixed `reason` tag, message-pattern
+   matching for raw Playwright timeouts (`network_unavailable`, `ui_blocked_by_overlay`,
+   `playwright_timeout`), non-timeout connection/navigation/browser-closed patterns, the
+   `unclassified:<Type>` fallback for unmatched exception types, and `format_checkpoint_error`'s
+   `"<reason>: <message>"` formatting.
+
+**Expected Result**
+- All classification branches in `hapag_lloyd/errors.py::classify_exception` are exercised by an
+  automated test with no live site/browser dependency.
+- `format_checkpoint_error` is verified to prefix the classified reason onto the exception message
+  exactly as `checkpoint.json` entries expect (matching what Test Cases 9–10, 22–25 observed live).
+- These unit tests do not cover the *wiring* gap from Test Case 26 (`LoginFailedError` being unused
+  in `auth.py::login`) — that remains a functional/integration gap, not a unit-testable one.
+
+**Actual Result**
+`tests/test_errors.py` passes 22 cases covering `classify_exception` (all `ScrapeError` subclasses,
+timeout message-pattern branches, non-timeout message-pattern branches, and the unclassified
+fallback) and `format_checkpoint_error`. Run via `pytest tests/test_errors.py -q`: all passed.
+
+**Test Status:** Passed
+
+---
+
+### Test Case 34 — `load_config` Merge Precedence Has Unit Coverage
+
+**Test Scenario:** Verify the config precedence chain exercised live in Test Cases 19–20
+(DEFAULT_CONFIG → config file → CLI flags) is also covered by a fast unit test against
+`hapag_lloyd/config.py::load_config` directly, isolating the merge logic from the browser-driven
+assertions in those test cases.
+
+**Test Steps**
+1. Run `pytest tests/test_config.py -v`.
+2. Inspect the cases covered: defaults-only (no config file, no CLI flags), CLI flags overriding
+   defaults, empty-string CLI flags NOT clobbering existing values (falsy-override guard), a config
+   file overriding defaults, and CLI flags winning over a config file value for the same field.
+
+**Expected Result**
+- `load_config` returns a fresh copy of `DEFAULT_CONFIG` when given no config file and no CLI flags.
+- Non-empty CLI flags (`--origin`, `--destination`, `--email`, `--password`, `--output`, `--headless`)
+  override both defaults and config-file values for the same field.
+- Empty-string CLI flags do not override an existing value, since `load_config` only applies an
+  override when the flag's value is truthy.
+- A `--config` JSON file's values override `DEFAULT_CONFIG` but are in turn overridden by any CLI
+  flag targeting the same field — matching the documented priority order in `config.py`'s module
+  docstring.
+
+**Actual Result**
+`tests/test_config.py` passes 14 cases covering all of the above using an `argparse.Namespace`
+builder matching `parse_args()`'s defaults. Run via `pytest tests/test_config.py -q`: all passed.
+This complements Test Cases 19–20, which verify the same precedence rules end-to-end against the
+live site (confirming the CLI-filled value is actually what gets typed into the search form), while
+these unit tests isolate and pin the merge logic itself.
+
+**Test Status:** Passed
+
+---
+
 ## Adding new test cases
 
 Follow the template above (Test Case / Module / Test Scenario / Test Steps / Expected Result /

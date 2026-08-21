@@ -10,7 +10,7 @@ services:
       - ./observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
       - loki-data:/loki
     ports:
-      - "3103:3100"
+      - "3105:3100"
     networks: [lgtm]
 
   promtail:
@@ -29,9 +29,9 @@ services:
       - ./observability/tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
       - tempo-data:/var/tempo
     ports:
-      - "3203:3200"   # Tempo HTTP API
-      - "4325:4317"   # OTLP gRPC (direct, if bypassing the collector)
-      - "4326:4318"   # OTLP HTTP
+      - "3205:3200"   # Tempo HTTP API
+      - "4331:4317"   # OTLP gRPC (direct, if bypassing the collector)
+      - "4332:4318"   # OTLP HTTP
     networks: [lgtm]
 
   prometheus:
@@ -43,13 +43,13 @@ services:
       - ./observability/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
       - prometheus-data:/prometheus
     ports:
-      - "9093:9090"
+      - "9096:9090"
     networks: [lgtm]
 
   pushgateway:
     image: prom/pushgateway:v1.11.0
     ports:
-      - "9094:9091"
+      - "9097:9091"
     networks: [lgtm]
 
   otel-collector:
@@ -58,8 +58,8 @@ services:
     volumes:
       - ./observability/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
-      - "4327:4317"   # OTLP gRPC (scraper sends traces/metrics here)
-      - "4328:4318"   # OTLP HTTP
+      - "4333:4317"   # OTLP gRPC (scraper sends traces/metrics here)
+      - "4334:4318"   # OTLP HTTP
     depends_on: [tempo, prometheus]
     networks: [lgtm]
 
@@ -74,7 +74,7 @@ services:
       - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3003:3000"
+      - "3005:3000"
     depends_on: [loki, tempo, prometheus]
     networks: [lgtm]
 
